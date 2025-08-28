@@ -68,6 +68,7 @@ class Aggregator(nn.Module):
         qk_norm=True,
         rope_freq=100,
         init_values=0.01,
+        camera_context_dim: int | None = None,
     ):
         super().__init__()
 
@@ -140,6 +141,13 @@ class Aggregator(nn.Module):
 
         self.use_reentrant = False # hardcoded to False
 
+        # Optional linear to embed external camera context vectors to token dimension
+        self.camera_context_dim = camera_context_dim
+        if self.camera_context_dim is not None:
+            self.camera_context_embed = nn.Linear(self.camera_context_dim, embed_dim)
+        else:
+            self.camera_context_embed = None
+
     def __build_patch_embed__(
         self,
         patch_embed,
@@ -181,7 +189,7 @@ class Aggregator(nn.Module):
             if hasattr(self.patch_embed, "mask_token"):
                 self.patch_embed.mask_token.requires_grad_(False)
 
-    def forward(self, images: torch.Tensor) -> Tuple[List[torch.Tensor], int]:
+    def forward(self, images: torch.Tensor, camera_context: torch.Tensor | None = None) -> Tuple[List[torch.Tensor], int]:
         """
         Args:
             images (torch.Tensor): Input images with shape [B, S, 3, H, W], in range [0, 1].
@@ -209,8 +217,33 @@ class Aggregator(nn.Module):
 
         _, P, C = patch_tokens.shape
 
-        # Expand camera and register tokens to match batch size and sequence length
-        camera_token = slice_expand_and_flatten(self.camera_token, B, S)
+        # Build camera token(s): use provided external camera context if available
+        if camera_context is not None:
+            # Expect shape [B, S, D] where D is either camera_context_dim (to be embedded)
+            # or already equals embed_dim (pre-embedded token)
+            if camera_context.dim() != 3 or camera_context.shape[0] != B or camera_context.shape[1] != S:
+                raise ValueError(
+                    f"camera_context must have shape [B,S,D], got {tuple(camera_context.shape)}; B={B}, S={S}"
+                )
+            D = camera_context.shape[-1]
+            if self.camera_context_embed is not None:
+                if D != self.camera_context_dim:
+                    raise ValueError(
+                        f"camera_context last dim ({D}) != expected camera_context_dim ({self.camera_context_dim})"
+                    )
+                cam_tok = self.camera_context_embed(camera_context)  # [B,S,C]
+            else:
+                # If no embed layer defined, allow passing pre-embedded tokens with correct dim
+                if D != patch_tokens.shape[-1]:
+                    raise ValueError(
+                        f"camera_context provided without embed layer must have dim == embed_dim ({patch_tokens.shape[-1]}), got {D}"
+                    )
+                cam_tok = camera_context
+
+            camera_token = cam_tok.reshape(B * S, 1, cam_tok.shape[-1])
+        else:
+            # Expand learnable camera and register tokens to match batch size and sequence length
+            camera_token = slice_expand_and_flatten(self.camera_token, B, S)
         register_token = slice_expand_and_flatten(self.register_token, B, S)
 
         # Concatenate special tokens with patch tokens

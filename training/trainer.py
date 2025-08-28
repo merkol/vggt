@@ -742,8 +742,9 @@ class Trainer:
         Returns:
             A dictionary containing the computed losses.
         """
-        # Forward pass
-        y_hat = model(images=batch["images"])
+        # Forward pass (pass external camera context if available)
+        camera_context = batch.get("camera_context", None)
+        y_hat = model(images=batch["images"], camera_context=camera_context)
         
         # Loss computation
         loss_dict = self.loss(y_hat, batch)
@@ -760,7 +761,8 @@ class Trainer:
     def _update_and_log_scalars(self, data: Mapping, phase: str, step: int, loss_meters: dict):
         """Updates average meters and logs scalar values to TensorBoard."""
         keys_to_log = self._get_scalar_log_keys(phase)
-        batch_size = data['extrinsics'].shape[0]
+        # Derive batch size from images to support datasets without explicit camera labels
+        batch_size = data['images'].shape[0]
         
         for key in keys_to_log:
             if key in data:
