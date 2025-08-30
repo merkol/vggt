@@ -9,6 +9,10 @@ dependencies = [
     "opencv-python",
     "torch==2.3.1",
     "torchvision==0.18.1",
+    "hydra-core>=1.3.2",
+    "iopath>=0.1.10",
+    "wcmatch>=10.1",
+    "tensorboard>=2.20.0",
 ]
 name = "vggt"
 requires-python = ">= 3.10"
