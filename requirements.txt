@@ -5,3 +5,4 @@ Pillow
 huggingface_hub
 einops
 safetensors
+fvcore>=0.1.5.post20221221

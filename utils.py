@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-from kaolin.metrics.pointcloud import chamfer_distance
+# from kaolin.metrics.pointcloud import chamfer_distance
 from torch.utils.data.dataloader import default_collate
 from typing import Optional, Tuple
 import torch.distributed as dist
@@ -307,253 +307,253 @@ def posevec_to_extrinsic(pose_vecs: torch.Tensor) -> torch.Tensor:
     return E
 
 
-def edge_aware_smoothing_loss(
-    depth_pred: torch.Tensor,
-    image: torch.Tensor,
-    mask: Optional[torch.Tensor] = None,
-    lambda_grad: float = 1.0,
-) -> torch.Tensor:
-    """
-    Compute edge-aware smoothing loss for depth prediction.
+# def edge_aware_smoothing_loss(
+#     depth_pred: torch.Tensor,
+#     image: torch.Tensor,
+#     mask: Optional[torch.Tensor] = None,
+#     lambda_grad: float = 1.0,
+# ) -> torch.Tensor:
+#     """
+#     Compute edge-aware smoothing loss for depth prediction.
 
-    This loss encourages smooth depth predictions while preserving edges
-    by reducing smoothing penalty near image edges where depth discontinuities
-    are expected.
+#     This loss encourages smooth depth predictions while preserving edges
+#     by reducing smoothing penalty near image edges where depth discontinuities
+#     are expected.
 
-    Args:
-        depth_pred: Predicted depth maps (B, V, 1, H, W) or (B, 1, H, W)
-        image: RGB images (B, V, 3, H, W) or (B, 3, H, W) in range [0, 1]
-        mask: Optional mask (B, V, 1, H, W) or (B, 1, H, W) to ignore certain regions
-        lambda_grad: Weight for the gradient penalty
+#     Args:
+#         depth_pred: Predicted depth maps (B, V, 1, H, W) or (B, 1, H, W)
+#         image: RGB images (B, V, 3, H, W) or (B, 3, H, W) in range [0, 1]
+#         mask: Optional mask (B, V, 1, H, W) or (B, 1, H, W) to ignore certain regions
+#         lambda_grad: Weight for the gradient penalty
 
-    Returns:
-        torch.Tensor: Edge-aware smoothing loss
-    """
-    # Handle both multi-view (B, V, C, H, W) and single view (B, C, H, W) inputs
-    original_shape = depth_pred.shape
-    if len(original_shape) == 5:  # Multi-view case (B, V, 1, H, W)
-        B, V, _, H, W = depth_pred.shape
-        depth_pred = depth_pred.reshape(B * V, 1, H, W)
-        image = image.reshape(B * V, 3, H, W)
-        if mask is not None:
-            mask = mask.reshape(B * V, 1, H, W)
+#     Returns:
+#         torch.Tensor: Edge-aware smoothing loss
+#     """
+#     # Handle both multi-view (B, V, C, H, W) and single view (B, C, H, W) inputs
+#     original_shape = depth_pred.shape
+#     if len(original_shape) == 5:  # Multi-view case (B, V, 1, H, W)
+#         B, V, _, H, W = depth_pred.shape
+#         depth_pred = depth_pred.reshape(B * V, 1, H, W)
+#         image = image.reshape(B * V, 3, H, W)
+#         if mask is not None:
+#             mask = mask.reshape(B * V, 1, H, W)
 
-    # Convert RGB to grayscale for edge detection
-    # RGB to grayscale weights: 0.299*R + 0.587*G + 0.114*B
-    gray_weights = torch.tensor([0.299, 0.587, 0.114], device=image.device).view(
-        1, 3, 1, 1
-    )
-    gray_image = torch.sum(image * gray_weights, dim=1, keepdim=True)  # (B*V, 1, H, W)
+#     # Convert RGB to grayscale for edge detection
+#     # RGB to grayscale weights: 0.299*R + 0.587*G + 0.114*B
+#     gray_weights = torch.tensor([0.299, 0.587, 0.114], device=image.device).view(
+#         1, 3, 1, 1
+#     )
+#     gray_image = torch.sum(image * gray_weights, dim=1, keepdim=True)  # (B*V, 1, H, W)
 
-    # Compute image gradients using Sobel operators
-    sobel_x = torch.tensor(
-        [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32, device=image.device
-    ).view(1, 1, 3, 3)
-    sobel_y = torch.tensor(
-        [[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32, device=image.device
-    ).view(1, 1, 3, 3)
+#     # Compute image gradients using Sobel operators
+#     sobel_x = torch.tensor(
+#         [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32, device=image.device
+#     ).view(1, 1, 3, 3)
+#     sobel_y = torch.tensor(
+#         [[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32, device=image.device
+#     ).view(1, 1, 3, 3)
 
-    # Compute image gradients
-    img_grad_x = F.conv2d(gray_image, sobel_x, padding=1)
-    img_grad_y = F.conv2d(gray_image, sobel_y, padding=1)
-    img_grad_magnitude = torch.sqrt(img_grad_x**2 + img_grad_y**2 + 1e-8)
+#     # Compute image gradients
+#     img_grad_x = F.conv2d(gray_image, sobel_x, padding=1)
+#     img_grad_y = F.conv2d(gray_image, sobel_y, padding=1)
+#     img_grad_magnitude = torch.sqrt(img_grad_x**2 + img_grad_y**2 + 1e-8)
 
-    # Compute depth gradients
-    depth_grad_x = F.conv2d(depth_pred, sobel_x, padding=1)
-    depth_grad_y = F.conv2d(depth_pred, sobel_y, padding=1)
+#     # Compute depth gradients
+#     depth_grad_x = F.conv2d(depth_pred, sobel_x, padding=1)
+#     depth_grad_y = F.conv2d(depth_pred, sobel_y, padding=1)
 
-    # Edge-aware weights: reduce smoothing penalty near image edges
-    # Use exponential weighting: exp(-lambda_grad * |∇I|)
-    edge_weights = torch.exp(-lambda_grad * img_grad_magnitude)
+#     # Edge-aware weights: reduce smoothing penalty near image edges
+#     # Use exponential weighting: exp(-lambda_grad * |∇I|)
+#     edge_weights = torch.exp(-lambda_grad * img_grad_magnitude)
 
-    # Compute weighted smoothing loss
-    smooth_loss_x = edge_weights * torch.abs(depth_grad_x)
-    smooth_loss_y = edge_weights * torch.abs(depth_grad_y)
+#     # Compute weighted smoothing loss
+#     smooth_loss_x = edge_weights * torch.abs(depth_grad_x)
+#     smooth_loss_y = edge_weights * torch.abs(depth_grad_y)
 
-    # Apply mask if provided
-    if mask is not None:
-        # Create gradient masks by applying conv2d to the mask
-        mask_grad_x = F.conv2d(
-            mask.float(), torch.ones(1, 1, 3, 1, device=mask.device), padding=(1, 0)
-        )
-        mask_grad_y = F.conv2d(
-            mask.float(), torch.ones(1, 1, 1, 3, device=mask.device), padding=(0, 1)
-        )
+#     # Apply mask if provided
+#     if mask is not None:
+#         # Create gradient masks by applying conv2d to the mask
+#         mask_grad_x = F.conv2d(
+#             mask.float(), torch.ones(1, 1, 3, 1, device=mask.device), padding=(1, 0)
+#         )
+#         mask_grad_y = F.conv2d(
+#             mask.float(), torch.ones(1, 1, 1, 3, device=mask.device), padding=(0, 1)
+#         )
 
-        # Only consider gradients where both neighboring pixels are valid
-        mask_x = mask_grad_x > 1.5  # Both pixels in x-direction are valid
-        mask_y = mask_grad_y > 1.5  # Both pixels in y-direction are valid
+#         # Only consider gradients where both neighboring pixels are valid
+#         mask_x = mask_grad_x > 1.5  # Both pixels in x-direction are valid
+#         mask_y = mask_grad_y > 1.5  # Both pixels in y-direction are valid
 
-        smooth_loss_x = smooth_loss_x * mask_x.float()
-        smooth_loss_y = smooth_loss_y * mask_y.float()
+#         smooth_loss_x = smooth_loss_x * mask_x.float()
+#         smooth_loss_y = smooth_loss_y * mask_y.float()
 
-        # Normalize by valid gradient count
-        total_loss = (smooth_loss_x.sum() + smooth_loss_y.sum()) / (
-            mask_x.sum() + mask_y.sum() + 1e-8
-        )
-    else:
-        # Average over all pixels
-        total_loss = smooth_loss_x.mean() + smooth_loss_y.mean()
+#         # Normalize by valid gradient count
+#         total_loss = (smooth_loss_x.sum() + smooth_loss_y.sum()) / (
+#             mask_x.sum() + mask_y.sum() + 1e-8
+#         )
+#     else:
+#         # Average over all pixels
+#         total_loss = smooth_loss_x.mean() + smooth_loss_y.mean()
 
-    return total_loss
-
-
-def chamfer_distance_variable_size(pred_pcds, gt_pcds, device: torch.device):
-    """
-    Compute chamfer distance for variable-sized point clouds.
-
-    Args:
-        pred_pcds: List of predicted point cloud tensors (each is a tuple of (points, colors))
-        gt_pcds: List of ground truth point cloud tensors
-        device: Device to move tensors to
-
-    Returns:
-        chamfer_loss: Average chamfer distance across the batch
-    """
-
-    batch_losses = []
-    for pred_pcd, gt_pcd in zip(pred_pcds, gt_pcds):
-        # Extract points from the tuple (points, colors) - we only need points for chamfer distance
-        if isinstance(pred_pcd, tuple):
-            pred_points = pred_pcd[0]  # Get points tensor
-        else:
-            pred_points = pred_pcd
-
-        # Ensure tensors are on the correct device and have batch dimension
-        pred_points = pred_points.to(dtype=torch.float32, device=device).unsqueeze(
-            0
-        )  # (1, N, 3)
-        gt_pcd = gt_pcd.unsqueeze(0).to(dtype=torch.float32, device=device)[
-            :, :, :3
-        ]  # (1, M, 3)
-
-        # Compute chamfer distance for this pair
-        loss = chamfer_distance(pred_points, gt_pcd)
-        batch_losses.append(loss)
-
-    # Average across the batch
-    return torch.stack(batch_losses).mean()
+#     return total_loss
 
 
-def save_checkpoint(
-    model,
-    optimizer,
-    scheduler,
-    epoch,
-    best_val_loss,
-    experiment_name,
-    config,
-    wandb_run_id=None,
-    checkpoint_dir=None,
-):
-    """Save training checkpoint"""
-    # Access the underlying model from DDP wrapper (handle compiled model)
-    if hasattr(model, "_orig_mod"):  # For torch.compile
-        if hasattr(model._orig_mod, "module"):  # For DDP
-            model_state = model._orig_mod.module.state_dict()
-        else:
-            model_state = model._orig_mod.state_dict()
-    elif hasattr(model, "module"):  # For DDP without compile
-        model_state = model.module.state_dict()
-    else:
-        model_state = model.state_dict()
+# def chamfer_distance_variable_size(pred_pcds, gt_pcds, device: torch.device):
+#     """
+#     Compute chamfer distance for variable-sized point clouds.
 
-    checkpoint = {
-        "epoch": epoch,
-        "model_state_dict": model_state,
-        "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
-        "best_val_loss": best_val_loss,
-        "config": config,
-        "wandb_run_id": wandb_run_id,
-        "experiment_name": experiment_name,
-    }
+#     Args:
+#         pred_pcds: List of predicted point cloud tensors (each is a tuple of (points, colors))
+#         gt_pcds: List of ground truth point cloud tensors
+#         device: Device to move tensors to
 
-    # Create checkpoint filename
-    checkpoint_filename = f"checkpoint_epoch_{epoch}.pth"
+#     Returns:
+#         chamfer_loss: Average chamfer distance across the batch
+#     """
 
-    # Use provided directory or current directory
-    if checkpoint_dir:
-        import os
+#     batch_losses = []
+#     for pred_pcd, gt_pcd in zip(pred_pcds, gt_pcds):
+#         # Extract points from the tuple (points, colors) - we only need points for chamfer distance
+#         if isinstance(pred_pcd, tuple):
+#             pred_points = pred_pcd[0]  # Get points tensor
+#         else:
+#             pred_points = pred_pcd
 
-        checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
-    else:
-        checkpoint_path = checkpoint_filename
+#         # Ensure tensors are on the correct device and have batch dimension
+#         pred_points = pred_points.to(dtype=torch.float32, device=device).unsqueeze(
+#             0
+#         )  # (1, N, 3)
+#         gt_pcd = gt_pcd.unsqueeze(0).to(dtype=torch.float32, device=device)[
+#             :, :, :3
+#         ]  # (1, M, 3)
 
-    torch.save(checkpoint, checkpoint_path)
-    return checkpoint_path
+#         # Compute chamfer distance for this pair
+#         loss = chamfer_distance(pred_points, gt_pcd)
+#         batch_losses.append(loss)
+
+#     # Average across the batch
+#     return torch.stack(batch_losses).mean()
 
 
-def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
-    """Load training checkpoint"""
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+# def save_checkpoint(
+#     model,
+#     optimizer,
+#     scheduler,
+#     epoch,
+#     best_val_loss,
+#     experiment_name,
+#     config,
+#     wandb_run_id=None,
+#     checkpoint_dir=None,
+# ):
+#     """Save training checkpoint"""
+#     # Access the underlying model from DDP wrapper (handle compiled model)
+#     if hasattr(model, "_orig_mod"):  # For torch.compile
+#         if hasattr(model._orig_mod, "module"):  # For DDP
+#             model_state = model._orig_mod.module.state_dict()
+#         else:
+#             model_state = model._orig_mod.state_dict()
+#     elif hasattr(model, "module"):  # For DDP without compile
+#         model_state = model.module.state_dict()
+#     else:
+#         model_state = model.state_dict()
 
-    # Load model state - handle DDP and compiled models
-    if hasattr(model, "_orig_mod"):  # For torch.compile
-        if hasattr(model._orig_mod, "module"):  # For DDP
-            model._orig_mod.module.load_state_dict(checkpoint["model_state_dict"])
-        else:
-            model._orig_mod.load_state_dict(checkpoint["model_state_dict"])
-    elif hasattr(model, "module"):  # For DDP without compile
-        model.module.load_state_dict(checkpoint["model_state_dict"])
-    else:
-        model.load_state_dict(checkpoint["model_state_dict"])
+#     checkpoint = {
+#         "epoch": epoch,
+#         "model_state_dict": model_state,
+#         "optimizer_state_dict": optimizer.state_dict(),
+#         "scheduler_state_dict": scheduler.state_dict(),
+#         "best_val_loss": best_val_loss,
+#         "config": config,
+#         "wandb_run_id": wandb_run_id,
+#         "experiment_name": experiment_name,
+#     }
 
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+#     # Create checkpoint filename
+#     checkpoint_filename = f"checkpoint_epoch_{epoch}.pth"
 
-    return (
-        checkpoint["epoch"],
-        checkpoint["best_val_loss"],
-        checkpoint.get("wandb_run_id"),
-        checkpoint.get("experiment_name", "default"),
-    )
+#     # Use provided directory or current directory
+#     if checkpoint_dir:
+#         import os
 
+#         checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
+#     else:
+#         checkpoint_path = checkpoint_filename
 
-def setup_ddp():
-    """Initialize the distributed environment."""
-    dist.init_process_group(backend="nccl")
-    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-
-
-def cleanup_ddp():
-    """Clean up the distributed environment."""
-    dist.destroy_process_group()
-
-
-def get_rank():
-    """Get the rank of the current process."""
-    return int(os.environ.get("RANK", 0))
-
-
-def get_world_size():
-    """Get the total number of processes."""
-    return int(os.environ.get("WORLD_SIZE", 1))
-
-
-def is_main_process():
-    """Check if this is the main process (rank 0)."""
-    return get_rank() == 0
+#     torch.save(checkpoint, checkpoint_path)
+#     return checkpoint_path
 
 
-def prefer_flash_attention():
-    """
-    Prefer FlashAttention if available (Ampere/Ada + fp16/bf16 + constraints).
-    Otherwise let PyTorch fall back to mem-efficient or math SDPA.
-    """
-    try:
-        torch.backends.cuda.enable_flash_sdp(True)  # enable Flash backend
-        torch.backends.cuda.enable_mem_efficient_sdp(
-            True
-        )  # keep mem-efficient as fallback
-        torch.backends.cuda.enable_math_sdp(True)  # and math as last fallback
-    except Exception:
-        pass
+# def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
+#     """Load training checkpoint"""
+#     checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+#     # Load model state - handle DDP and compiled models
+#     if hasattr(model, "_orig_mod"):  # For torch.compile
+#         if hasattr(model._orig_mod, "module"):  # For DDP
+#             model._orig_mod.module.load_state_dict(checkpoint["model_state_dict"])
+#         else:
+#             model._orig_mod.load_state_dict(checkpoint["model_state_dict"])
+#     elif hasattr(model, "module"):  # For DDP without compile
+#         model.module.load_state_dict(checkpoint["model_state_dict"])
+#     else:
+#         model.load_state_dict(checkpoint["model_state_dict"])
+
+#     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+#     scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+#     return (
+#         checkpoint["epoch"],
+#         checkpoint["best_val_loss"],
+#         checkpoint.get("wandb_run_id"),
+#         checkpoint.get("experiment_name", "default"),
+#     )
 
 
-def ensure_contiguous(tensor: torch.Tensor) -> torch.Tensor:
-    """Ensure tensor is contiguous in memory to avoid DDP stride warnings."""
-    return tensor.contiguous() if not tensor.is_contiguous() else tensor
+# def setup_ddp():
+#     """Initialize the distributed environment."""
+#     dist.init_process_group(backend="nccl")
+#     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+
+
+# def cleanup_ddp():
+#     """Clean up the distributed environment."""
+#     dist.destroy_process_group()
+
+
+# def get_rank():
+#     """Get the rank of the current process."""
+#     return int(os.environ.get("RANK", 0))
+
+
+# def get_world_size():
+#     """Get the total number of processes."""
+#     return int(os.environ.get("WORLD_SIZE", 1))
+
+
+# def is_main_process():
+#     """Check if this is the main process (rank 0)."""
+#     return get_rank() == 0
+
+
+# def prefer_flash_attention():
+#     """
+#     Prefer FlashAttention if available (Ampere/Ada + fp16/bf16 + constraints).
+#     Otherwise let PyTorch fall back to mem-efficient or math SDPA.
+#     """
+#     try:
+#         torch.backends.cuda.enable_flash_sdp(True)  # enable Flash backend
+#         torch.backends.cuda.enable_mem_efficient_sdp(
+#             True
+#         )  # keep mem-efficient as fallback
+#         torch.backends.cuda.enable_math_sdp(True)  # and math as last fallback
+#     except Exception:
+#         pass
+
+
+# def ensure_contiguous(tensor: torch.Tensor) -> torch.Tensor:
+#     """Ensure tensor is contiguous in memory to avoid DDP stride warnings."""
+#     return tensor.contiguous() if not tensor.is_contiguous() else tensor
 
 
 def position_grid_to_embed(

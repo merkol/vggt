@@ -13,6 +13,9 @@ dependencies = [
     "iopath>=0.1.10",
     "wcmatch>=10.1",
     "tensorboard>=2.20.0",
+    "open3d>=0.19.0",
+    "kornia>=0.8.1",
+    "fvcore>=0.1.5.post20221221",
 ]
 name = "vggt"
 requires-python = ">= 3.10"

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Any
 
 from torch.utils.data import DataLoader, Subset
 
@@ -50,6 +50,7 @@ class ObjaverseDataModule:
         drop_last: bool = False,
         subset_start: Optional[float] = None,
         subset_end: Optional[float] = None,
+        **unused_kwargs: Any,
     ) -> None:
         self.root = root
         self.image_size = int(image_size)
@@ -64,6 +65,18 @@ class ObjaverseDataModule:
         self.drop_last = drop_last
         self.subset_start = subset_start
         self.subset_end = subset_end
+
+        # Gracefully ignore any unexpected keyword arguments introduced by
+        # upstream config composition (e.g., inherited from other dataset configs)
+        if unused_kwargs:
+            try:
+                import warnings
+                warnings.warn(
+                    f"ObjaverseDataModule: ignoring unknown init args: {list(unused_kwargs.keys())}",
+                    RuntimeWarning,
+                )
+            except Exception:
+                pass
 
     def get_loader(self, epoch: int):  # epoch kept for API compatibility
         dataset = ObjaverseOrthoDataset(

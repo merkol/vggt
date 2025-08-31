@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 from pathlib import Path
 from re import I
 from typing import Any, Dict, Optional, Sequence, Tuple
@@ -173,10 +174,11 @@ class ObjaverseOrthoDataset(Dataset):
         else:
             view_ids = self.view_ids[: self.num_views]
 
-        pose_vecs = extrinsic_to_posevec_scipy(trans[view_ids])  # (V,7) [w,x,y,z, tx,ty,tz]
+        pose_vecs = extrinsic_to_posevec_scipy(
+            trans[view_ids]
+        )  # (V,7) [w,x,y,z, tx,ty,tz]
 
         images_list, depth_list, mask_list, scales = (
-            [],
             [],
             [],
             [],
@@ -216,7 +218,9 @@ class ObjaverseOrthoDataset(Dataset):
             mask_list.append(mask_t)
 
         # Stack to (V, ..)
-        images = torch.stack(images_list, dim=0)  # (V,3,H,W) in [0,1], augmented if color_aug is set
+        images = torch.stack(
+            images_list, dim=0
+        )  # (V,3,H,W) in [0,1], augmented if color_aug is set
         depth = torch.stack(depth_list, dim=0)  # (V,1,H,W)
         mask = torch.stack(mask_list, dim=0)  # (V,1,H,W)
         pose_vecs = torch.as_tensor(pose_vecs, dtype=torch.float32)  # (V,7)
@@ -233,9 +237,9 @@ class ObjaverseOrthoDataset(Dataset):
 
         return {
             "images": images,
-            "depths": depth,           # align with training/loss expected key
+            "depths": depth,  # align with training/loss expected key
             "mask": mask,
-            "point_masks": mask,       # reuse segmentation as valid pixel mask
+            "point_masks": mask,  # reuse segmentation as valid pixel mask
             "camera_context": pose_vecs,
             "scales": scales,
             "pcd": pcd_tensor,
@@ -261,7 +265,9 @@ if __name__ == "__main__":
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    dl = DataLoader(ds, batch_size=8, shuffle=False, num_workers=4, collate_fn=custom_collate_fn)
+    dl = DataLoader(
+        ds, batch_size=8, shuffle=False, num_workers=4, collate_fn=custom_collate_fn
+    )
     for _, batch in tqdm(enumerate(dl)):
         # print("object_id:", batch["object_id"])
         # print(
