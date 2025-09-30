@@ -649,6 +649,75 @@ def read_image_cv2(path: str, rgb: bool = True) -> np.ndarray:
 
     return img
 
+def read_image_cv2_alpha(
+    path: str,
+    rgb: bool = True,
+    background: tuple | None = None,   # e.g. (255,255,255) for white; if None and image has alpha, returns alpha too
+    return_alpha: bool = False,
+):
+    """
+    Read an image with OpenCV, preserving alpha if present and handling conversions correctly.
+
+    Args:
+        path: file path
+        rgb:  if True, return RGB order; else BGR/grayscale
+        background: if given and image has alpha, composite onto this (R,G,B) color
+        return_alpha: if True and image has alpha, also return the alpha (H,W) uint8
+
+    Returns:
+        img  (H,W,3)  uint8  (or (img, alpha) if return_alpha and alpha exists)
+    """
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        print(f"File does not exist or is empty: {path}")
+        return None if not return_alpha else (None, None)
+
+    # Keep whatever channels exist (1/3/4)
+    img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        print(f"Could not load image={path}.")
+        return None if not return_alpha else (None, None)
+
+    # GRAYSCALE
+    if img.ndim == 2:
+        if rgb:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+        else:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        return img if not return_alpha else (img, None)
+
+    # COLOR (3-channel, no alpha)
+    if img.shape[2] == 3:
+        if rgb:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        return img if not return_alpha else (img, None)
+
+    # BGRA (4-channel)
+    if img.shape[2] == 4:
+        bgr = img[..., :3].astype(np.float32)
+        a   = img[..., 3].astype(np.float32) / 255.0
+        a3  = a[..., None]
+
+        if background is None:
+            # Do NOT composite: just return color + alpha properly ordered
+            rgb_img = cv2.cvtColor(img[..., :3], cv2.COLOR_BGR2RGB) if rgb else img[..., :3]
+            alpha_u8 = (a * 255.0).astype(np.uint8)
+            return (rgb_img, alpha_u8) if return_alpha else rgb_img
+
+        # Composite onto chosen background, then drop alpha
+        bg = np.array(background, dtype=np.float32)
+        if not rgb:
+            # background given in RGB; convert to BGR to match 'bgr'
+            bg = bg[[2,1,0]]
+        comp = bgr * a3 + bg * (1.0 - a3)
+        comp = np.clip(comp, 0, 255).astype(np.uint8)
+
+        if rgb:
+            comp = cv2.cvtColor(comp, cv2.COLOR_BGR2RGB)
+        return comp if not return_alpha else (comp, (a * 255).astype(np.uint8))
+
+    # Unexpected shape
+    raise ValueError(f"Unsupported image shape: {img.shape}")
+
 
 def read_depth(path: str, scale_adjustment=1.0) -> np.ndarray:
     """

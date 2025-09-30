@@ -27,12 +27,14 @@ import time
 from datetime import timedelta
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torchvision
 from hydra.utils import instantiate
 from iopath.common.file_io import g_pathmgr
+from PIL import Image, ImageDraw, ImageFont
 
 from train_utils.checkpoint import DDPCheckpointSaver
 from train_utils.distributed import get_machine_local_and_dist_rank
@@ -761,13 +763,111 @@ class Trainer:
         """Updates average meters and logs scalar values to TensorBoard."""
         keys_to_log = self._get_scalar_log_keys(phase)
         batch_size = data['extrinsics'].shape[0]
-        
+
         for key in keys_to_log:
             if key in data:
                 value = data[key].item() if torch.is_tensor(data[key]) else data[key]
                 loss_meters[f"Loss/{phase}_{key}"].update(value, batch_size)
                 if step % self.logging_conf.log_freq == 0 and self.rank == 0:
                     self.tb_writer.log(f"Values/{phase}/{key}", value, step)
+
+    def _prepare_visual_tensor(self, tensor: Any) -> Optional[torch.Tensor]:
+        """Convert heterogeneous tensors to a uniform BCHW float grid."""
+        if tensor is None:
+            return None
+
+        if isinstance(tensor, np.ndarray):
+            tensor = torch.from_numpy(tensor)
+
+        if not torch.is_tensor(tensor):
+            return None
+
+        # Move any channel-last layouts to BCHW
+        if tensor.dim() == 4:
+            # Convert channel-last tensors to channel-first
+            if tensor.shape[1] not in (1, 3) and tensor.shape[-1] in (1, 3):
+                tensor = tensor.permute(0, 3, 1, 2)
+            elif tensor.shape[1] not in (1, 3):
+                return None
+        elif tensor.dim() == 3:
+            # Could be (H, W, C) or (N, H, W)
+            if tensor.shape[-1] in (1, 3):
+                tensor = tensor.permute(2, 0, 1).unsqueeze(0)
+            else:
+                tensor = tensor.unsqueeze(1)
+        elif tensor.dim() == 2:
+            tensor = tensor.unsqueeze(0).unsqueeze(0)
+        else:
+            return None
+
+        if tensor.dim() != 4:
+            return None
+
+        # Ensure channel count uniform (repeat grayscale to RGB)
+        if tensor.shape[1] == 1:
+            tensor = tensor.repeat(1, 3, 1, 1)
+        elif tensor.shape[1] != 3:
+            return None
+
+        tensor = tensor.float()
+
+        # Normalize each item independently to [0, 1]
+        with torch.no_grad():
+            mins = tensor.amin(dim=(2, 3), keepdim=True)
+            maxs = tensor.amax(dim=(2, 3), keepdim=True)
+            denom = (maxs - mins).clamp(min=1e-5)
+            tensor = (tensor - mins) / denom
+
+        return tensor
+
+    def _get_batch_size(self, batch: Mapping) -> int:
+        if "seq_name" in batch and isinstance(batch["seq_name"], Sequence) and not isinstance(batch["seq_name"], str):
+            return len(batch["seq_name"])
+
+        if "images" in batch:
+            value = batch["images"]
+            if torch.is_tensor(value):
+                return value.shape[0]
+            if isinstance(value, (list, tuple)):
+                return len(value)
+
+        for key, value in batch.items():
+            if torch.is_tensor(value) and value.ndim > 0:
+                return value.shape[0]
+            if isinstance(value, (list, tuple)) and value:
+                return len(value)
+        return 1
+
+    def _slice_example(self, value: Any, index: int) -> Any:
+        if torch.is_tensor(value):
+            if value.ndim == 0 or index >= value.shape[0]:
+                return None
+            return value[index]
+
+        if isinstance(value, np.ndarray):
+            if value.ndim == 0 or index >= value.shape[0]:
+                return None
+            return value[index]
+
+        if isinstance(value, (list, tuple)):
+            if index >= len(value):
+                return None
+            return value[index]
+
+        return None
+
+    def _make_label_tensor(self, text: str, width: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        height = 24
+        canvas = Image.new("RGB", (width, height), color=(30, 30, 30))
+        draw = ImageDraw.Draw(canvas)
+        try:
+            font = ImageFont.load_default()
+        except Exception:
+            font = None
+        draw.text((6, 4), text, fill=(220, 220, 220), font=font)
+        label_np = np.array(canvas).astype(np.float32) / 255.0
+        label_tensor = torch.from_numpy(label_np).permute(2, 0, 1)
+        return label_tensor.to(device=device, dtype=dtype)
 
     def _log_tb_visuals(self, batch: Mapping, phase: str, step: int) -> None:
         """Logs image or video visualizations to TensorBoard."""
@@ -795,18 +895,64 @@ class Trainer:
                 "video",
             ], "Currently only support video or image logging"
 
+            batch_size = self._get_batch_size(batch)
+            max_examples = min(self.logging_conf.visuals_per_batch_to_log, batch_size)
+
+            seq_names = batch.get("seq_name")
+            if isinstance(seq_names, str):
+                seq_names = [seq_names]
+
             name = f"Visuals/{phase}"
 
-            visuals_to_log = torchvision.utils.make_grid(
-                [
-                    torchvision.utils.make_grid(
-                        batch[key][0],  # Ensure batch[key][0] is tensor and has at least 3 dimensions
-                        nrow=self.logging_conf.visuals_per_batch_to_log,
+            per_key_panels: List[torch.Tensor] = []
+
+            for key in keys_to_log:
+                if key not in batch:
+                    continue
+
+                value = batch[key]
+                example_rows: List[torch.Tensor] = []
+
+                for example_idx in range(max_examples):
+                    example = self._slice_example(value, example_idx)
+                    if example is None:
+                        continue
+
+                    prepared = self._prepare_visual_tensor(example)
+                    if prepared is None or prepared.numel() == 0:
+                        continue
+
+                    grid = torchvision.utils.make_grid(
+                        prepared,
+                        nrow=prepared.shape[0],
                     )
-                    for key in keys_to_log if key in batch and batch[key][0].dim() >= 3
-                ],
-                nrow=1,
-            ).clamp(-1, 1)
+
+                    label_text = None
+                    if isinstance(seq_names, Sequence) and example_idx < len(seq_names):
+                        label_text = str(seq_names[example_idx])
+                    elif seq_names is not None:
+                        label_text = str(seq_names)
+                    else:
+                        label_text = f"sample_{example_idx}"
+
+                    label_tensor = self._make_label_tensor(
+                        f"{key} | {label_text}",
+                        grid.shape[-1],
+                        device=grid.device,
+                        dtype=grid.dtype,
+                    )
+
+                    grid_with_label = torch.cat([label_tensor, grid], dim=1)
+                    example_rows.append(grid_with_label)
+
+                if example_rows:
+                    key_panel = torch.cat(example_rows, dim=1)
+                    per_key_panels.append(key_panel)
+
+            if not per_key_panels:
+                return
+
+            visuals_to_log = torch.cat(per_key_panels, dim=1).clamp(0, 1)
 
             visuals_to_log = visuals_to_log.cpu()
             if visuals_to_log.dtype == torch.bfloat16:
@@ -865,4 +1011,3 @@ def get_chunk_from_data(data: Any, chunk_id: int, num_chunks: int) -> Any:
         return [get_chunk_from_data(value, chunk_id, num_chunks) for value in data]
     else:
         return data
-

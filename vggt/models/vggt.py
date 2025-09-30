@@ -6,6 +6,7 @@
 
 import torch
 import torch.nn as nn
+from typing import Dict, Optional
 from huggingface_hub import PyTorchModelHubMixin  # used for model hub
 
 from vggt.models.aggregator import Aggregator
@@ -15,16 +16,78 @@ from vggt.heads.track_head import TrackHead
 
 
 class VGGT(nn.Module, PyTorchModelHubMixin):
-    def __init__(self, img_size=518, patch_size=14, embed_dim=1024,
-                 enable_camera=True, enable_point=True, enable_depth=True, enable_track=True):
+    def __init__(
+        self,
+        img_size=518,
+        patch_size=14,
+        embed_dim=1024,
+        enable_camera=True,
+        enable_point=True,
+        enable_depth=True,
+        enable_track=True,
+        aggregator_cfg: Optional[Dict[str, object]] = None,
+        camera_head_cfg: Optional[Dict[str, object]] = None,
+        point_head_cfg: Optional[Dict[str, object]] = None,
+        depth_head_cfg: Optional[Dict[str, object]] = None,
+        track_head_cfg: Optional[Dict[str, object]] = None,
+    ):
         super().__init__()
 
-        self.aggregator = Aggregator(img_size=img_size, patch_size=patch_size, embed_dim=embed_dim)
+        aggregator_kwargs = dict(
+            img_size=img_size,
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+        )
+        if aggregator_cfg:
+            aggregator_kwargs.update(dict(aggregator_cfg))
 
-        self.camera_head = CameraHead(dim_in=2 * embed_dim) if enable_camera else None
-        self.point_head = DPTHead(dim_in=2 * embed_dim, output_dim=4, activation="inv_log", conf_activation="expp1") if enable_point else None
-        self.depth_head = DPTHead(dim_in=2 * embed_dim, output_dim=2, activation="exp", conf_activation="expp1") if enable_depth else None
-        self.track_head = TrackHead(dim_in=2 * embed_dim, patch_size=patch_size) if enable_track else None
+        self.aggregator = Aggregator(**aggregator_kwargs)
+        agg_embed_dim = aggregator_kwargs["embed_dim"]
+        self.embed_dim = agg_embed_dim
+
+        if enable_camera:
+            camera_kwargs = dict(dim_in=2 * agg_embed_dim)
+            if camera_head_cfg:
+                camera_kwargs.update(dict(camera_head_cfg))
+            self.camera_head = CameraHead(**camera_kwargs)
+        else:
+            self.camera_head = None
+
+        if enable_point:
+            point_kwargs = dict(
+                dim_in=2 * agg_embed_dim,
+                output_dim=4,
+                activation="inv_log",
+                conf_activation="expp1",
+                patch_size=patch_size,
+            )
+            if point_head_cfg:
+                point_kwargs.update(dict(point_head_cfg))
+            self.point_head = DPTHead(**point_kwargs)
+        else:
+            self.point_head = None
+
+        if enable_depth:
+            depth_kwargs = dict(
+                dim_in=2 * agg_embed_dim,
+                output_dim=2,
+                activation="exp",
+                conf_activation="expp1",
+                patch_size=patch_size,
+            )
+            if depth_head_cfg:
+                depth_kwargs.update(dict(depth_head_cfg))
+            self.depth_head = DPTHead(**depth_kwargs)
+        else:
+            self.depth_head = None
+
+        if enable_track:
+            track_kwargs = dict(dim_in=2 * agg_embed_dim, patch_size=patch_size)
+            if track_head_cfg:
+                track_kwargs.update(dict(track_head_cfg))
+            self.track_head = TrackHead(**track_kwargs)
+        else:
+            self.track_head = None
 
     def forward(self, images: torch.Tensor, query_points: torch.Tensor = None):
         """

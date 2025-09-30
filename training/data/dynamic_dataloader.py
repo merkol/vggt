@@ -192,8 +192,21 @@ class DynamicBatchSampler(Sampler):
                 break  # End of sampler's iterator
 
     def __len__(self):
-        # Return a large dummy length
-        return 1000000
+        dataset_len = len(self.sampler.dataset)
+        if dataset_len <= 0:
+            return 1
+
+        # Estimate batches as dataset_len divided by average frames per sample
+        min_imgs, max_imgs = self.image_num_range
+        avg_imgs = 0.5 * (min_imgs + max_imgs)
+        if avg_imgs <= 0:
+            avg_imgs = 1
+
+        est_batch = max(1, int(self.max_img_per_gpu // max(1, avg_imgs)))
+        if est_batch <= 0:
+            est_batch = 1
+
+        return max(1, int(np.ceil(dataset_len / est_batch)))
 
 
 class DynamicDistributedSampler(DistributedSampler):
